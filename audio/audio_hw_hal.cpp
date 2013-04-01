@@ -144,7 +144,11 @@ static audio_channel_mask_t out_get_channels(const struct audio_stream *stream)
 {
     const struct legacy_stream_out *out =
         reinterpret_cast<const struct legacy_stream_out *>(stream);
+#ifdef USES_AUDIO_LEGACY
+    return (audio_channel_mask_t) out->legacy_out->channels() >> 2;
+#else
     return (audio_channel_mask_t) out->legacy_out->channels();
+#endif
 }
 
 static audio_format_t out_get_format(const struct audio_stream *stream)
@@ -439,8 +443,11 @@ static int adev_set_master_volume(struct audio_hw_device *dev, float volume)
 #ifndef ICS_AUDIO_BLOB
 static int adev_get_master_volume(struct audio_hw_device *dev, float* volume)
 {
+#ifndef USES_AUDIO_LEGACY
     struct legacy_audio_device *ladev = to_ladev(dev);
     return ladev->hwif->getMasterVolume(volume);
+#endif
+    return INVALID_OPERATION;
 }
 #endif
 
@@ -466,6 +473,13 @@ static int adev_get_mic_mute(const struct audio_hw_device *dev, bool *state)
 static int adev_set_parameters(struct audio_hw_device *dev, const char *kvpairs)
 {
     struct legacy_audio_device *ladev = to_ladev(dev);
+#ifdef NO_SCREEN_STATE_KEY_SUPPORT
+    // ignore screen_state=off/on new ics key
+    if (strncmp(kvpairs, "screen_state=", 13) == 0 && strlen(kvpairs) <= 16) {
+        ALOGV("%s:%d %s (ignored)", __FUNCTION__, __LINE__, kvpairs);
+        return 0;
+    }
+#endif
     return ladev->hwif->setParameters(String8(kvpairs));
 }
 
@@ -525,12 +539,29 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
     devices = convert_audio_device(devices, HAL_API_REV_2_0, HAL_API_REV_1_0);
 
 #ifndef ICS_AUDIO_BLOB
+#ifdef USES_AUDIO_LEGACY
+    uint32_t channels;
+    channels = config->channel_mask << 2;
+    out->legacy_out = ladev->hwif->openOutputStream(devices, (int *) &config->format,
+                                                    &channels,
+                                                    &config->sample_rate, &status);
+    config->channel_mask = channels;
+#else
     out->legacy_out = ladev->hwif->openOutputStream(devices, (int *) &config->format,
                                                     &config->channel_mask,
                                                     &config->sample_rate, &status);
+#endif
 #else
     out->legacy_out = ladev->hwif->openOutputStream(devices, format, channels,
                                                     sample_rate, &status);
+#endif
+
+#ifdef USES_AUDIO_LEGACY
+#ifndef ICS_AUDIO_BLOB
+    config->channel_mask = config->channel_mask >> 2;
+#else
+    *channels = *channels >> 2;
+#endif
 #endif
 
     if (!out->legacy_out) {
@@ -599,7 +630,9 @@ static int adev_open_input_stream(struct audio_hw_device *dev,
     if (!in)
         return -ENOMEM;
 
+#ifndef USES_AUDIO_LEGACY
     devices = convert_audio_device(devices, HAL_API_REV_2_0, HAL_API_REV_1_0);
+#endif
 
 #ifndef ICS_AUDIO_BLOB
     in->legacy_in = ladev->hwif->openInputStream(devices, (int *) &config->format,
